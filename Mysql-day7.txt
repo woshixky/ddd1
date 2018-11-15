@@ -1,0 +1,345 @@
+=============================
+Mysql复制技术 之 半同步技术
+=============================
+
+Mysql复制技术 之 半同步技术：
+---------------------------
+			这个技术是Mysql5.5版本之后的新功能。 	
+
+
+前面我们学到的MySQL复制技术，是叫异步技术：
+
+异步技术的概述：
+--------------
+   在主服务器上每执行完一条事务命令后都会写进二进制的日志，从服务器通过IO线程监控主服务器的二进制日志，每当主服务器的二进制日志发生改变，从服务器就会启动复制
+
+异步技术的特点：
+--------------
+   是允许主从之间的数据存在一定的延迟，对网络要求不高，这样设计的目的是基于数据库的高可用性，为了保证master不受slave的影响，并且异步复制使得master处于一种性能最优的状态：
+
+在主从架构中使用异步技术，如果master停机，会发生刚刚已提交的事务，slave未能及时复制过来的可能。
+
+
+半同步技术特点：
+--------------
+  master每commit一个事务,要等待slave应用这个事物后给master确认信号。这样master才能把事物成功commit。这样保证了主从数据的绝对一致，mysql半同步复制等待时间超时后(默认时间为10秒)，会自动转换成异步复制 
+
+
+
+下面开始配置半同步复制技术：
+==========================
+环境要求:
+		搭建好 mysql主从异步复制
+
+
+1、在master上安装半同步插件
+---------------------------
+	mysql >  install plugin rpl_semi_sync_master soname 'semisync_master.so';
+
+备：删除主服务器插件的方法 mysql > uninstall plugin rpl_semi_sync_master;
+
+mysql >  show global variables like 'rpl_semi_sync%';  --安装成功后，会查询出以下4项参数
++------------------------------------+-------+
+| Variable_name                      | Value |
++------------------------------------+-------+
+| rpl_semi_sync_master_enabled       | OFF   |	--是否启用master的半同步复制
+| rpl_semi_sync_master_timeout       | 10000 |  --默认主等待从返回信息的超时间时间，10秒。
+| rpl_semi_sync_master_trace_level   | 32    |  --监控等级，32代表的是等待
+| rpl_semi_sync_master_wait_no_slave | ON    |	--是否允许每个事物的提交都要等待slave的信号.on为每一个事物都等待
++------------------------------------+-------+
+
+
+2、在slave上安装插件
+--------------------
+	mysql >  install plugin rpl_semi_sync_slave soname 'semisync_slave.so';
+
+
+备：删除从服务器插件的方法 mysql > uninstall plugin rpl_semi_sync_slave;
+
+
+mysql >  show global variables like 'rpl_semi_sync%';   --从服务器安装成功后，会查询出以下2项参数
++---------------------------------+-------+
+| Variable_name                   | Value |
++---------------------------------+-------+
+| rpl_semi_sync_slave_enabled     | OFF   |   ----是否启用master的半同步复制
+| rpl_semi_sync_slave_trace_level | 32    |   ----监控等级，32代表的是等待
++---------------------------------+-------+
+
+
+3、在主服务器master开启半同步复制
+---------------------------------
+mysql >  set global rpl_semi_sync_master_enabled=on;		--开启命令
+
+
+在master查看状态
+master > show global status like 'rpl_semi_sync%';
++--------------------------------------------+-------+
+| Variable_name                              | Value |
++--------------------------------------------+-------+
+| Rpl_semi_sync_master_clients               | 1     | --有一个从服务器启用半同步复制
+| Rpl_semi_sync_master_net_avg_wait_time     | 0     | --master等待slave回复确认的平均等待时间。单位毫秒
+| Rpl_semi_sync_master_net_wait_time         | 0     | --master总的等待时间。单位毫秒
+| Rpl_semi_sync_master_net_waits             | 0     | --master等待slave回复的总的等待次数
+| Rpl_semi_sync_master_no_times              | 0     | --master关闭半同步复制的次数
+| Rpl_semi_sync_master_no_tx                 | 0     | --master 等待超时的次数
+| Rpl_semi_sync_master_status                | ON    | --标记master现在是否是半同步复制状态
+| Rpl_semi_sync_master_timefunc_failures     | 0     | --master调用时间（如gettimeofday())失败的次数	
+| Rpl_semi_sync_master_tx_avg_wait_time      | 0     | --master在处理每个事务的平均等待时间
+| Rpl_semi_sync_master_tx_wait_time          | 0     | --master在处理事物等待的总时间
+| Rpl_semi_sync_master_tx_waits              | 0     | --master事物等待次数
+| Rpl_semi_sync_master_wait_pos_backtraverse | 0     | --后来的先到了，而先来的还没有到的次数
+| Rpl_semi_sync_master_wait_sessions         | 0     | --当前有多少个session因为slave回复而造成等待
+| Rpl_semi_sync_master_yes_tx                | 0     | --表示这次事物成功从slave返回一次确认信号
++--------------------------------------------+-------+
+
+
+
+4、在从服务器slave开启半同步复制
+--------------------------------
+mysql >  set global rpl_semi_sync_slave_enabled=on;    --开启命令
+mysql >  stop slave IO_THREAD;				
+mysql >  start slave IO_THREAD;  --重启IO
+
+
+在slave上查看状态
+slave > show global status like 'rpl_semi_sync%';
++----------------------------+-------+
+| Variable_name              | Value |
++----------------------------+-------+
+| Rpl_semi_sync_slave_status | ON    |
++----------------------------+-------+
+
+
+5、测试半同步：
+-------------
+在主服务器上往aaa.a1表里插入数据：
+master > insert into aaa.a1 values (3);
+
+
+mysql> show global status like 'rpl_semi_sync%';      --再查看半同步状态，和前面进行对比
++--------------------------------------------+-------+
+| Variable_name                              | Value |
++--------------------------------------------+-------+                                                     
+| Rpl_semi_sync_master_clients               | 1     | --有一个从服务器启用半同步复制                     
+| Rpl_semi_sync_master_net_avg_wait_time     | 814   | --master等待slave回复确认的平均等待时间。单位毫秒  
+| Rpl_semi_sync_master_net_wait_time         | 814   | --master总的等待时间。单位毫秒                     
+| Rpl_semi_sync_master_net_waits             | 1     | --master等待slave回复的总的等待次数                
+| Rpl_semi_sync_master_no_times              | 0     | --master关闭半同步复制的次数                      
+| Rpl_semi_sync_master_no_tx                 | 0     | --master 等待超时的次数                           
+| Rpl_semi_sync_master_status                | ON    | --标记master现在是否是半同步复制状态               
+| Rpl_semi_sync_master_timefunc_failures     | 0     | --master调用时间（如gettimeofday())失败的次数	     
+| Rpl_semi_sync_master_tx_avg_wait_time      | 0     | --master在处理每个事务的平均等待时间               
+| Rpl_semi_sync_master_tx_wait_time          | 0     | --master在处理事物等待的总时间                     
+| Rpl_semi_sync_master_tx_waits              | 0     | --master事物等待次数                               
+| Rpl_semi_sync_master_wait_pos_backtraverse | 0     | --后来的先到了，而先来的还没有到的次数             
+| Rpl_semi_sync_master_wait_sessions         | 0     | --当前有多少个session因为slave回复而造成等待       
+| Rpl_semi_sync_master_yes_tx                | 1     | --表示这次事物成功从slave返回一次确认信号          
++--------------------------------------------+-------+                                                     
+14 rows in set (0.00 sec)
+
+
+
+6、模拟错误，把slave上的mysql停掉 /etc/init.d/mysql56 stop
+----------------------------------------------------------
+--再回到master上往aaa.a1表里插入数据。
+mysql >  insert into aaa.a1 values (4);
+Query OK, 1 row affected (10.00 sec)	--这次插入一个值需要等待10秒（默认的等待时间)
+
+mysql >  insert into aaa.a1 values (5);
+Query OK, 1 row affected (0.01 sec)	--现在自动转成了原来的异步模式（类似oracle DG里的最大性能模式)
+
+
+mysql> show global status like 'rpl_semi_sync%';      --再查看半同步状态
++--------------------------------------------+-------+
+| Variable_name                              | Value |
++--------------------------------------------+-------+
+| Rpl_semi_sync_master_clients               | 0     |
+| Rpl_semi_sync_master_net_avg_wait_time     | 884   |
+| Rpl_semi_sync_master_net_wait_time         | 8845  |
+| Rpl_semi_sync_master_net_waits             | 10    |
+| Rpl_semi_sync_master_no_times              | 1     |   --表示同步已经停止了一次
+| Rpl_semi_sync_master_no_tx                 | 3     |   --有3个未同步超时的事务
+| Rpl_semi_sync_master_status                | OFF   |   --表示同步状态为关闭状态
+| Rpl_semi_sync_master_timefunc_failures     | 0     |
+| Rpl_semi_sync_master_tx_avg_wait_time      | 1093  |
+| Rpl_semi_sync_master_tx_wait_time          | 8748  |
+| Rpl_semi_sync_master_tx_waits              | 8     |
+| Rpl_semi_sync_master_wait_pos_backtraverse | 0     |
+| Rpl_semi_sync_master_wait_sessions         | 0     |
+| Rpl_semi_sync_master_yes_tx                | 9     |
++--------------------------------------------+-------+
+14 rows in set (0.00 sec)
+
+
+再次把slave启动。
+mysql> show global variables like 'rpl_semi_sync%'; 
++---------------------------------+-------+
+| Variable_name                   | Value |
++---------------------------------+-------+
+| rpl_semi_sync_slave_enabled     | OFF   |  --看到半同步复制已经关闭了，切换成了异步模式
+| rpl_semi_sync_slave_trace_level | 32    |
++---------------------------------+-------+
+
+
+再执行下开启动作，才可以重新打开半同步复制模式。
+
+mysql >  set global rpl_semi_sync_slave_enabled=on;
+mysql >  stop slave IO_THREAD;
+mysql >  start slave IO_THREAD;
+
+slave启起来后，查看表，发现刚才slave关闭期间的那几条数据还是会自动复制过来，数据又回到一致
+
+
+
+=======
+思考题：
+=======
+	半同步技术模式：
+	在主服务器上只要执行：
+		rpl_semi_sync_master_enabled=on; 这条便条就能开启
+		
+		
+	在从服务器上只要执行以下3条命令能就开启
+		rpl_semi_sync_slave_enabled=on; 
+		stop slave IO_THREAD;
+		start slave IO_THREAD;   
+
+	一但主服务器或从服务器mysql服务停止或重启，半同步就会失效，有什么办法可以让他永久生效。
+
+========================================华丽的分隔线=========================================
+
+
+
+================
+mysql的延时复制
+================
+
+
+延迟的流复制特点：
+    可自动设置复制间隔时间，可以防止主节点数据误删，查看数据库历史状态等
+
+
+
+
+ 在MySQL 的主从复制基础上操作：
+ 		命令语法：CHANGE MASTER TO MASTER_DELAY = 30;   #备：设置备节点延迟的时间，单位秒。
+
+
+在slave从服务器上操作：
+1、在slave从服务器上将slave服务停止
+   语法：mysql> stop slave;
+   
+2、配置延迟复制时间
+   语法：change master to master_delay=30;
+
+3、启动slave线程
+   语法：mysql> start slave;
+
+4、查看状态
+	 语法：mysql> show slave status\G
+*************************** 1. row ***************************
+               Slave_IO_State: Waiting for master to send event
+                  Master_Host: 192.168.169.165
+                  Master_User: qy
+                  Master_Port: 3307
+                Connect_Retry: 60
+              Master_Log_File: mysql56-master.000003
+          Read_Master_Log_Pos: 3240
+               Relay_Log_File: mysql56-relay-bin.000002
+                Relay_Log_Pos: 288
+        Relay_Master_Log_File: mysql56-master.000003
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+              Replicate_Do_DB: 
+          Replicate_Ignore_DB: 
+           Replicate_Do_Table: 
+       Replicate_Ignore_Table: 
+      Replicate_Wild_Do_Table: 
+  Replicate_Wild_Ignore_Table: 
+                   Last_Errno: 0
+                   Last_Error: 
+                 Skip_Counter: 0
+          Exec_Master_Log_Pos: 3240
+              Relay_Log_Space: 463
+              Until_Condition: None
+               Until_Log_File: 
+                Until_Log_Pos: 0
+           Master_SSL_Allowed: No
+           Master_SSL_CA_File: 
+           Master_SSL_CA_Path: 
+              Master_SSL_Cert: 
+            Master_SSL_Cipher: 
+               Master_SSL_Key: 
+        Seconds_Behind_Master: 0
+Master_SSL_Verify_Server_Cert: No
+                Last_IO_Errno: 0
+                Last_IO_Error: 
+               Last_SQL_Errno: 0
+               Last_SQL_Error: 
+  Replicate_Ignore_Server_Ids: 
+             Master_Server_Id: 1
+                  Master_UUID: 83caeab7-6dbb-11e6-9e67-000c294d8ca6
+             Master_Info_File: /data/mysql56/master.info
+                    SQL_Delay: 30					#注意这个位置，已经将延迟复制时间修改成了30秒
+          SQL_Remaining_Delay: NULL
+      Slave_SQL_Running_State: Slave has read all relay log; waiting for the slave I/O thread to update it
+           Master_Retry_Count: 86400
+                  Master_Bind: 
+      Last_IO_Error_Timestamp: 
+     Last_SQL_Error_Timestamp: 
+               Master_SSL_Crl: 
+           Master_SSL_Crlpath: 
+           Retrieved_Gtid_Set: 
+            Executed_Gtid_Set: 
+                Auto_Position: 0
+
+
+
+4、测试，在master主服务器上插入1条数据
+   语法：mysql> insert into ccc.aa values(6);
+
+   ->回到slave从服务器上查询主刚插入的数据：select * from ccc.aa;
+	 ->主服务器插入完成后，马上回到从服务器查询是查询不到的，要等待30秒过后才可以
+
+
+
+===============================华丽的分隔线==================================
+
+作业题：
+
+思考题：
+   假设在A上误删除一条数据，用二进制日志来恢复不太方便，因为日志里记录的是删除的操作，并没有记录这条数据具体是什么，所以你要在所有的日志里找到当初插入这条数据时的记录，这是很麻烦的。
+
+
+
+
+原理理解题：
+
+题1:mysql架构中,一主多从、双主、级联这三种的区别和优缺点
+
+			
+
+
+
+题2:某公司mysql数据库运行了一年，现在要求搭建mysqlAB复制，检查主库后，发现它这一年没有使用二进制日志，请问如何做复制？
+
+
+
+
+
+题3:在实际大数据量的数据库中，因为负载太高或者网络问题，造成主从复制时有延时，此时你是DBA，请问如何处理？
+
+
+
+
+题4:如果一个lamp架构在深圳机房在运行，如何尽量无影响的把这个lamp迁移到惠州的机房
+
+
+1，在惠州机房做一个lamp，mysql双主架构，web做rsync远程实时同步
+2，把网站域名对应的IP地址A记录改成惠州的IP
+3，当深圳机房服务器无连接时，就可以关闭深圳机房的服务器了
+
+
+===============================结束线==================================
+
+

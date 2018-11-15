@@ -1,0 +1,325 @@
+================
+Mysql 数据切分
+================
+
+
+是按照不同的数据访问不同的数据库 
+
+第一步：搭建前，先将mysql主从打开，再关闭读写分离
+# vim /usr/local/amoeba/conf/amoeba.xml   --在117行前面加上<!--，在119行下面加上--> 注释到117、118行，读写分享成功关闭。 
+
+116         <!--    
+117                 <property name="writePool">server1</property>
+118                 <property name="readPool">server2</property>
+119          -->
+
+
+第二步：配置数据切片
+
+--下面我是按aaa.emp表里的emp_id这一列来切分，当它为奇数就给server2,为偶数就给server1
+# vim /usr/local/amoeba/conf/rule.xml	--修改第三个配置文件，定义数据切分的规则
+
+<?xml version="1.0" encoding="gbk"?>
+<!DOCTYPE amoeba:rule SYSTEM "rule.dtd">
+<amoeba:rule xmlns:amoeba="http://amoeba.meidusa.com/">
+    <tableRule name="emp" schema="aaa" defaultPools="server1,server2">    --name代表表名称，schema代表数据库名，defaultPools代表可支持的服务器
+       <rule name="rule1" ruleResult="POOLNAME"> 	             --name 代表切片动作的名称
+          <parameters>id</parameters>                      --代表aaa.emp表里哪个字段要做切片的判断
+              <expression><![CDATA[                            --切片开始
+                         var division = id % 2;            --定义division变量，值为 id % 2 ，也就是取余
+                         case division when 1 then 'server1';  --变量值不能被2整除的转到server1
+                                       when 0 then 'server2';  --变量值能被2整除的转到server2
+                         end case;      
+                        ]]>                                    --切片结束
+              </expression>
+        </rule>
+     </tableRule>
+</amoeba:rule>
+
+
+
+--直接复制粘贴上去，格式空格之类的太多；可以先在vim里:set paste再insert模式粘贴上去就可以了
+
+
+备：复制到rule.xml文件后，要把后面的中文注释删除，使用命令d$
+d$使用方法：按d再按下$，就是删除该行光标后面的内容。
+
+
+第三步:重启amoeba
+
+# cd /usr/local/amoeba     --进入到amoeba安装目录
+# ./bin/amoeba stop        --停止服务
+# nohup ./bin/amoeba start &   --启动服务
+
+
+第四步:客户端测试
+
+在客户端连接进行测试，连接的IP为amoeba的IP，端口为3307
+# mysql -h192.168.169.163 -utest -p123321 -P3307
+
+注意:amoeba是根据sql解析来进行数据切分的，所以需要把切分的关键字段（这里是emp表的id字段）加入到sql中.否则切分规则无效。无效后,会在 server1,server2 均都插入数据。
+
+
+
+mysql> insert into aaa.emp values (1,'aaa');  --这样做是错误的，会在两个后台数据库里都插入数据
+
+--正确的插入方法
+mysql> insert into aaa.emp(id,ename) values (1,'aaa');
+mysql> insert into aaa.emp(id,ename) values (2,'bbb');
+mysql> insert into aaa.emp(id,ename) values (3,'ccc');
+mysql> insert into aaa.emp(id,ename) values (4,'ddd');
+
+
+
+然后去server1(2.2.2.128)上查看，只有1,3两条数据
+    去server2(2.2.2.129)上查看，只有2,4两条数据
+				数据切分成功
+
+
+delete和update操作也是同理
+
+
+
+----------------------------------华丽的分隔线--------------------------------
+
+
+--按照上面的配置文件，只修改rule.xml规则文件如下，做成以emp_id值的范围来进行水平切分
+
+--下面实现的是id小于等于100的任何操作都在server1,大于100的任何操作都是在server2
+
+
+<?xml version="1.0" encoding="gbk"?>
+<!DOCTYPE amoeba:rule SYSTEM "rule.dtd">
+<amoeba:rule xmlns:amoeba="http://amoeba.meidusa.com/">
+        <tableRule name="emp" schema="aaa" defaultPools="server1,server2">
+                        <rule name="rule1">
+                              <parameters>id</parameters>
+                              <expression><![CDATA[ id <= 100]]></expression>
+                                        <defaultPools>server1</defaultPools>
+                                        <readPools>server1</readPools>
+                                        <writePools>server1</writePools>
+                        </rule>
+
+                        <rule name="rule2">
+                              <parameters>id</parameters>
+                              <expression><![CDATA[ id > 100]]></expression>
+                                        <defaultPools>server2</defaultPools>
+                                        <readPools>server2</readPools>
+                                        <writePools>server2</writePools>
+                        </rule>
+        </tableRule>
+
+</amoeba:rule>
+
+--直接复制粘贴上去，格式空格之类的太多；可以先在vim里:set paste再insert模式粘贴上去就可以了
+
+
+====================================华丽的分隔线====================================
+
+===========================
+Amoeba数据切分 之 垂直切分:
+===========================
+
+架构图
+					client   192.168.169.164
+						|			
+						|	
+					amoeba   192.168.169.163 
+				  	|
+						|	 
+		|------------------｜
+	
+		 mysqlA		          mysqlB		  
+	192.168.169.165	      192.168.169.166		  
+  aaa.aaa表					   aaa.bbb表
+
+
+
+第一步：准备测试环境
+1、先把两个mysql（不做AB复制的）以前的数据删掉，新建两个表来做测试
+
+192.168.169.165上
+mysql> create database aaa;
+mysql> use aaa;
+mysql> create table aaa.aaa (id int);
+
+
+192.168.169.166上
+mysql> create database aaa;
+mysql> use aaa;
+mysql> create table aaa.bbb (id int);
+
+
+第二步：修改rule.xml配置文件
+
+# vim /usr/local/amoeba/conf/rule.xml	  --清空文件内容，加上下面一段
+
+<?xml version="1.0" encoding="gbk"?>
+<!DOCTYPE amoeba:rule SYSTEM "rule.dtd">
+<amoeba:rule xmlns:amoeba="http://amoeba.meidusa.com/">
+        <tableRule name="aaa" schema="aaa" defaultPools="server1"/>
+        <tableRule name="bbb" schema="aaa" defaultPools="server2"/>
+</amoeba:rule>
+
+
+
+第三步:重启amoeba
+
+# cd /usr/local/amoeba     --进入到amoeba安装目录
+# ./bin/amoeba stop        --停止服务
+# nohup ./bin/amoeba start &   --启动服务
+
+
+
+第四步：在客户端测试
+# mysql -utest -p123321 -h192.168.169.163 -P3307
+
+mysql> use aaa;
+
+mysql> insert into aaa values (1);	--这一条被插入到192.168.169.167上的aaa.aaa表
+mysql> insert into bbb values (2);	--这一条被插入到192.168.169.168上的aaa.bbb表
+
+
+mysql> select * from aaa.aaa;
++------+
+| id   |
++------+
+|    1 |
++------+
+1 row in set (0.01 sec)
+
+mysql> 
+mysql> select * from aaa.bbb;
++------+
+| id   |
++------+
+|    2 |
++------+
+1 row in set (0.03 sec)
+
+mysql> 
+
+
+
+
+
+====================================华丽的分隔线====================================
+
+Amoeba集群 之 读集群
+
+
+集群的好处是，可以让服务器平均负载我们连接请求
+
+Amoeba集群分发算法有三种：
+1=ROUNDROBIN , 2=WEIGHTBASED , 3=HA
+             
+ROUNDROBIN   --代表轮询，1台访问一次
+WEIGHTBASED  --代表加权轮询，是以哪一台性能好就承载多一点连接 
+HA			 --代表高可用 
+
+
+把读写分离改成读集群的条件是至少2台服务器做读，
+
+
+
+第一步：配置dbServers.xml文件:
+
+dbServer.xml文件里的 59行~67行 是设置集群的段
+我们关注的行有59，62，65行
+
+	59行的 name="multiPool"，这个是设置服务器集群名称，在amoeba.xml文件里设备读服务器时要用到
+	62行是设置集群的算法，默认是1轮询
+	65行是设置服务器列表。
+
+
+以下是配置代码：
+
+vim /usr/local/amoeba/conf/dbServers.xml
+
+ 59         <dbServer name="multiPool" virtual="true">
+ 60                 <poolConfig class="com.meidusa.amoeba.server.MultipleServerPool">
+ 61                         <!-- Load balancing strategy: 1=ROUNDROBIN , 2=WEIGHTBASED , 3=HA-->
+ 62                         <property name="loadbalance">1</property>
+ 63 
+ 64                         <!-- Separated by commas,such as: server1,server2,server1 -->
+ 65                         <property name="poolNames">server1,server2</property>
+ 66                 </poolConfig>
+ 67         </dbServer>
+
+
+
+
+第二步：配置amoeba.xml文件：
+
+amoeba.xml文件里我们要修改118行。
+
+vim /usr/local/amoeba/conf/amoeba.xml   --修改配置文件
+
+117                 <property name="writePool">server1</property>  ---设置写的服务器，
+118                 <property name="readPool">multiPool</property> ---设置读的服务器。将原来的server2改成multiPool。multiPool就是第一步设置的集群服务器名称
+
+
+
+
+第三步：重启amoeba代理软件。
+	1、先将amoeba代理软件重启
+		命令：
+		--cd到amoeba安装目录：cd /usr/local/amoeba/
+		--停止：./bin/amoeba stop   
+		--启动：nohup ./bin/amoeba start &
+		
+	2、查看amoeba软件是否启动成功
+		命令：
+		--查看nohup.out文件，里面有启动的信息，如果有以下这段就代表启动成功。
+		2016-09-05 22:24:30,897 INFO  net.ServerableConnectionManager - Amoeba for Mysql listening on 0.0.0.0/0.0.0.0:3066.
+		2016-09-05 22:24:30,934 INFO  net.ServerableConnectionManager - Amoeba Monitor Server listening on /127.0.0.1:19659.
+		
+		--查看amoeba进程，判断是否启动。
+		命令：
+		--使用ps命令：ps -ef|grep mysql，如果能查出来进程，就代表已有进程，如果无则启动失败。
+		[root@node1 amoeba]# ps -ef|grep amoeba
+		root      12855  12471  0 22:24 pts/3    00:00:09 /usr/local/java/bin/java -server -Xms256m -Xmx256m -Xss228k -Damoeba.home=/usr/local/amoeba -Dclassworlds.conf=/usr/local/amoeba/bin/amoeba.classworlds -classpath /usr/local/amoeba/lib/classworlds-1.0.jar org.codehaus.classworlds.Launcher start
+		
+
+第四步：在客户机上测试读集群是否生效。
+
+在客户机上使用mysql命令登陆amoeba服务器
+
+# mysql -utest -p123321 -h192.168.169.163 -P3307
+
+
+ --往emp表里插入两条数据
+mysql> insert into emp values(10,"test1");  
+
+mysql> insert into emp values(11,"test11");
+
+
+ --再查询emp表的数据
+ mysql> select * from emp;    --查询的时候一次查询mysql 1上面的数据，再查询一次又跳到另外一台mysql服务器上了
++------+---------------------+
+| emp_id   | ename           |
++------+---------------------+
+|   10 | test1               |
+|   11 | test11              |
++------+---------------------+
+
+ mysql> select * from emp;    
++------+---------------------+
+| emp_id | ename             |
++------+---------------------+
+|    1 | ????192.168.169.166 |
+|    7 | test                |
+|    7 | test                |
+|    8 | test1               |
+|   10 | test1               |
+|   11 | test11              |
++------+---------------------+
+
+
+
+到此mysql读集群配置完毕。
+
+
+====================================华丽的分隔线====================================
+
+

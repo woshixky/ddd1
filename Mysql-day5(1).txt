@@ -1,0 +1,449 @@
+
+========================
+MySql 复制技术架构讲义：
+========================
+
+
+一、mysql AB 复制技术(主从)
+
+MySQL支持单向、异步(async)复制，复制过程中一个服务器充当主服务器，而一个或多个其它服务器充当从服务器。
+
+			mysql主  - - >   mysql从 
+			master		 slave
+
+把主上的二进制日志(bin-log)的内容传到从上的一个新的日志叫relay-bin-log
+		从上的	IO 线程  负责传输		
+		从上的	SQL 线程  负责从服务器解析日志
+
+复制的过程：
+	1，slave端的IO线程连上master端，请求
+
+	2，master端返回给slave端，bin log文件名和位置信息
+
+	3，IO线程把master端的bin log内容依次写到slave端relay bin log里，并把master端的bin-log文件名和位置记录到master.info里。
+
+	4，salve端的sql线程，检测到relay bin log中内容更新，就会解析relay log里更新的内容，并执行这些操作；也就是说salve执行和master一样的操作而达到数据同步的目的
+	
+	
+架构图：
+			    客户	
+			    ｜
+			    ｜	
+		 web程序，游戏程序（c,php,java.......)	
+			    |
+			    |
+		代理层	(mysqlproxy,amoeba)	
+			    |	
+			    |	
+		mysql主   ---->	 mysql从
+		
+				
+
+思考回答题：
+1，主打开二进制日志，从要不要开二进制日志?
+
+
+
+2，主和从的读写情况怎么分开？
+
+
+
+
+=================================================================
+
+二、一主多从复制构架
+
+			－－>	salve
+	master  	－－>	salve		
+			－－>	salve
+
+master	——负责写
+salve		——负责读
+
+--适合于以读为主的业务，使用多个salve分担读的压力，但要注意的是这种架构，salve越多，那么master复制的压力就越大
+
+
+=================================================================
+
+三、双主复制架构
+       	master A  <－－>   master B
+						  discuz		
+双方架构最大的优点是，两台服务器实现数据互通，两台即能写又读，在任何一台服务器上写数据，另一台都会同步
+
+
+思考题：
+1、双主mysql复制构架，能同时写相同的数据吗?
+
+
+3，两边可以写不同的数据吗？
+
+可以通过业务程序层，指定一些表的写操作全在一端，另一些表的写操作全在另一端，也就是说两边不会同时写相同的表（当然这是理想状态，因为业务复杂的话会有表的联结等情况）
+然后通过指定mysql复制的参数，一部分表或库会从A复制到B，另外一部分表或库从B复制到A就可以避免上面的问题了
+
+或者两个库，一个库master A来写，另一个库master B来写
+
+
+==========================================================================
+
+
+前面三个问题也说明了双主架构的第一种应用（就是两边写不关联的数据，互相复制)，双主架构的第二种应用就是解决一主一从架构里主挂掉了的问题。
+看下面的分析
+
+
+			mysql主  	 mysql从
+					 
+
+思考：
+问题1:如果一主一从，主挂了，slave能不能写，如果能写，主修好启起来后，salve写的数据如何传回给主?
+
+答案:主挂了，slave应该要写，否则论坛不能发贴，只能看贴；
+     主修好后（假设一小时)，slave写了这一小时的数据应该要想办法传回主才行。
+     方法一：DBA人为的把salve这一小时写的数据找出来再导入到主(如果很多表，一小时的操作也非常多，可以说几乎不可能找出这小时改变了啥）
+     方法二：使用类似rsync的同步方法,这是通过存储层来实现数据同步回去。备：是把整个数据目录复制过去。
+     方法三：DBA人为的把从这一小时改变的二进制日志（要确认slave打开二进制日志)给找出来然后应用到主上去
+		 方法四：直接把一主一从架构改为双主，或者把一主一从反过改成一从一主
+
+问题2:上面的方法无论哪一种都会有一个问题，就是把从写的一小时数据传回给主需要一定的时间
+就是假设这一小时slave创建了一个aaa表，主mysql修好启动后，
+如果主马上接管从的写功能，这时前端程序马上给了一个insert into aaa的插入操作，这样肯定会出问题，因为创建aaa表的操作还没有从slave那传回来,如何解决?
+
+解决方法一:人为控制主现在不能写，等slave的数据传回来后再写；但这样的话，等待时间太长了
+解决方法二:就是把一主一从的架构改成双主的架构（假设master A和master B)
+
+
+		master A  --->  master B (平时主B只读，不写，只有到主A挂了，才会写)
+
+		挂一个小时		
+				读写一个小时
+		修复后启动了
+		把读给A		写留给B
+
+
+问题3:改成双主后，master B在master A挂掉的一小时内帮他写了数据，A修好启起来后，B的数据可以自动传回A；但是如果数据量大的话，这个传回也可能需要一定时间，如果正好在这个传回时间内也出现了问题2的情况，又如何解决?
+
+
+解决方法一:人为控制主不能写，这样的话等待时间很短（因为是自动传回来，跟手动导回来速度快很多)，影响不大
+解决方法二:就直接把master B 做为新的写服务器，master A启动后，也只是做为读服务器；除非等下一次B挂了，A会重新成为写服务器（当然这是在两台服务器性能相等的情况下)
+
+
+总结:上面说明双主架构的两种应用
+
+-------------------------------------------------－－－－－
+
+
+					－－	salve  	－－	salve
+四、级联架构		master	－－	salve	－－	salve
+					－－	salve	－－ 	salve
+
+			bin-log		bin-log		?
+
+	为了解决一主多从的master的复制压力
+	可以把slave做为下一级从机的master
+
+	增加复制的级联层次，造成的延迟更长
+
+	所以这种架构并不是很推荐，一般会进行分拆集群
+
+
+
+--------------------------------------------------
+
+
+五、双主和级联合起来
+
+			master ----salve --slave
+			  |
+			  |		   －－ slave
+			master	－－ salve  －－ slave
+			  		   －－ slave
+
+
+------------------------------------------------------
+
+优化原则:分
+
+
+大型结构的数据量太大，要用到数据切分(水平，垂直)
+
+mysqlproxy 
+amoeba
+
+
+
+
+
+
+
+
+================================================华丽的分隔线=========================================
+
+mysql 主从复制技术
+
+开始实验
+
+1、关闭iptables,selinux,NetworkManager
+2、将主机名和IP写进hosts
+3、使用yum rpm包或tar安装数据库，主从两台机安装一致
+4、主：开启二进制日志，用于记录对表的增删改操作，并流传给从
+5、主从设置server-id值，主的值比从要小
+6、主：建立复制的帐号并授权
+
+
+master A 主服务器ip：192.168.169.161
+slave B  从服务器ip：192.168.169.162
+
+第一步；安装mysql数据库并配置
+yum源安装：yum -y install mysql*
+启动数据库：service mysqld restart
+修改root初始化密码：mysqladmin -uroot password 123;
+
+修改主、从配置文件 /etc/my.conf
+
+主：master:在[mysqld]标签下加入下面二句
+［mysqld] 
+log-bin=mysql-bin
+server-id=2
+
+
+备：slave：在[mysqld]标签下加入下面一句
+ [mysqld]
+ server-id=3
+
+完成配置后重新启动mysqld服务 /etc/init.d/mysql
+
+主服务器上ll /var/lib/mysql/  看下是否已经有二进制日志,mysql-bin.000001
+
+第二步：建立复制的帐号并授权
+
+主:master操作：建立qy帐号，密码111，授权从服务器192.168.169.162 ip登陆（意为:允许192.168.169.162登陆该数据）
+mysql> grant super,replication slave on *.* to 'qy'@'192.168.169.162' identified by '111';
+mysql> flush privileges;
+
+授权时如果想授权任何一个IP都可以登陆，则把IP地址改为 % 号，如下：
+mysql> grant super,replication slave on *.* to 'qy'@'%' identified by '111';
+
+授权完成后，在从服务器上登陆测试
+mysql -uqy -h192.168.169.161 -p111
+备：-h后面接IP为登陆服务器的IP
+
+
+第三步：给主mysql加上锁，防止有新的数据写入
+mysql> flush tables with read lock;	
+
+
+查看二进制日志记录的位置，配置从服务器要用,只要服务器开启二进制日志后才允许当主
+
+show master status --查看主服务器配置
+show slave status  --查看从服务器配置
+
+mysql> show master status;
++------------------+----------+--------------+------------------+
+| File             | Position | Binlog_Do_DB | Binlog_Ignore_DB |
++------------------+----------+--------------+------------------+
+| mysql-bin.000001 |      338 |              |                  |
++------------------+----------+--------------+------------------+
+
+备：尝试在主服务器上使用命令show slave status;查看是否有数据，因这台服务器是主服务器，所以条命令是看不到任何东西，是空的。
+
+
+mysql> exit
+
+查看主服务器的日志文件名是否和上面查出来的一致，配置从服务器要用
+[root@master mysql]# ll /var/lib/mysql
+total 20504
+-rw-rw---- 1 mysql mysql 10485760 Aug  7 22:18 ibdata1
+-rw-rw---- 1 mysql mysql  5242880 Aug  7 22:18 ib_logfile0
+-rw-rw---- 1 mysql mysql  5242880 Aug  7 22:15 ib_logfile1
+drwx------ 2 mysql mysql     4096 Aug  7 22:15 mysql
+-rw-rw---- 1 mysql mysql      581 Aug  7 22:53 mysql-bin.000001
+-rw-rw---- 1 mysql mysql       19 Aug  7 22:18 mysql-bin.index
+srwxrwxrwx 1 mysql mysql        0 Aug  7 22:18 mysql.sock
+drwx------ 2 mysql mysql     4096 Aug  7 22:15 test
+
+
+第四步：在从服务器slave端，配置mysql主从关系
+切到从服务器192.168.169.162上面
+先登陆数据库
+# mysql -uroot -p123456
+
+停止从服务器复制线程：备：默认该线程就是停止状态，执行该命令是告诉数据库该线程明确的要停止。
+mysql> slave stop;
+
+
+配置主从关系：备：该台服务器为从时，需要配置连接主服务器的信息，从服务器能不能在主服务器上面获取二进制日志，全靠下面的配置信息。
+mysql> change master to			--配置从服务器连接主服务器
+    -> master_user='qy',		--主服务器建立复制的帐号
+    -> master_password='111',		--密码
+    -> master_host='192.168.169.161',		--主服务器IP
+    -> master_port=3306,				--端口，注：不能加引号
+    -> master_log_file='mysql-bin.000001',	--主上面查到的文件名
+    -> master_log_pos=338;			--主上面查到的位置号
+
+配置连接主服务器信息后，在从服务器上启动slave线程。
+mysql> start slave;				--启动命令
+
+
+启动完成后，再查看slave线程连接主服务器的状态
+mysql> show slave status\G
+*************************** 1. row ***************************
+               Slave_IO_State: Waiting for master to send event
+                  Master_Host: 192.168.169.161
+                  Master_User: qy
+                  Master_Port: 3306
+                Connect_Retry: 60
+              Master_Log_File: mysql-bin.000001
+          Read_Master_Log_Pos: 338
+               Relay_Log_File: mysql-relay-bin.000002
+                Relay_Log_Pos: 230
+        Relay_Master_Log_File: mysql-bin.000001
+              Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes   --这里两个YES，表示两个线程OK
+              Replicate_Do_DB: 
+          Replicate_Ignore_DB: 
+           Replicate_Do_Table: 
+       Replicate_Ignore_Table: 
+      Replicate_Wild_Do_Table: 
+  Replicate_Wild_Ignore_Table: 
+                   Last_Errno: 0
+                   Last_Error: 
+                 Skip_Counter: 0
+          Exec_Master_Log_Pos: 338
+              Relay_Log_Space: 293
+              Until_Condition: None
+               Until_Log_File: 
+                Until_Log_Pos: 0
+           Master_SSL_Allowed: No
+           Master_SSL_CA_File: 
+           Master_SSL_CA_Path: 
+              Master_SSL_Cert: 
+            Master_SSL_Cipher: 
+               Master_SSL_Key: 
+        Seconds_Behind_Master: 0
+Master_SSL_Verify_Server_Cert: No
+                Last_IO_Errno: 0
+                Last_IO_Error: 
+               Last_SQL_Errno: 0
+               Last_SQL_Error: 
+  Replicate_Ignore_Server_Ids: 
+             Master_Server_Id: 2
+1 row in set (0.00 sec)
+
+
+
+第五步：在主服务器master端解锁mysql：
+mysql> unlock tables;
+
+
+第六步：测试
+在主服务器上创建库、表和插入表数据后，在从服务器查看是否有相同数据
+
+
+
+
+第七步：查看日志文件：在从服务器上查看(192.168.169.162)
+# cat /var/lib/mysql/master.info
+# cat /var/lib/mysql/relay-log.info
+# mysqlbinlog /var/lib/mysql/mysqld-relay-bin.000002
+
+
+题外：
+	尝试登陆从服务器:192.168.169.162
+	# mysql -uroot -p123456
+	在从服务器上面登陆库、表并使用insert插入数据。
+	
+	这时再登陆主服务器:192.168.169.161
+	# mysql -uroot -p123456
+	在主服务器上查看是否有从服务器创建和插入的数据。
+	
+备：只有master写，slave可以看到，slave写，master看不到
+
+
+如果复制出现问题
+（要模拟问题的话，在从上创建一个库，然后在主上也创建这个库，就会冲突，造成复制出现问题），
+重做复制集群只需要重新在从上执行stop slave; change master to ...... ; start slave;
+
+
+
+测试：把从重启后，再上去查看状态，还是连接的，没什么影响
+
+	把主重启后，再去slave上去查看状态，发现重试时间为60秒，等60秒后又自动连接OK了
+--如果想要改这个60秒的话，可以把从服务器上的master.info文件里的60直接改成30(rpm版测试有点问题)
+
+
+================================================华丽的分隔线=========================================
+
+
+1主多从的做法
+
+            ->slave
+	master 
+		->slave
+	
+
+	就是上面的步骤有几个从就做几次
+
+
+
+================================================华丽的分隔线=========================================
+
+
+双主架构
+	master - master
+	
+	把上面的1主1从，反过来做一遍，在上面的slave机也打开二进制日志，反着做一遍就行，注意做的过程中，保证数据一致
+
+做好的架构，只要两边不同时操作相同的数据，就不会出现复制不一致的问题；
+或者是在业务程序层，将一部分的写操作定义到master A,另一部分的写操作定义到master B
+	
+	
+	
+================================================华丽的分隔线=========================================
+master A 主服务器ip：192.168.169.167
+slave B  从服务器ip：192.168.169.168
+slave C  从服务器IP：192.168.169.166
+
+级联架构
+	
+	master A -slave B -slave C
+	
+	把中间的从也要打开二进制日志。但是它默认不把应用master的操作记录到自己的二进制日志。所以需要打开一个参数让它记录，才可以传给第三级的从
+
+在/etc/my.cnf文件里加上以下二句：
+
+max_allowed_packet=20M		--代表应用的日志大小
+log-slave-updates=1				--代表可以读取上一级从服务器应用主服务器的日志
+
+在服务器里查看参数
+show variables like '%max_allowed%'
+show variables like '%log_slave%';
+
+
+
+架构图：
+  master A	   		slave B	  	 	slave C	
+
+  192.168.169.167	   	192.168.169.168	     		192.168.169.166	
+
+ sever-id=1	  		server-id=2	       	server-id=3
+ log-bin=mysql-bin      log-bin=mysql-bin	
+		   		log-slave-updates=1
+
+
+
+日志应用流程：
+bin-log		  relay-bin-log        relay-bin-log
+
+->master A 创建一个库时日志会写进bin-log(二进制日志)
+	->这时slave B去master A读取bin-log再将应用日志放到本地的relay-bin-log日志里
+	->slave C这时去读取slave B的bin-log和relay-bin-log日志(因为slave B添加了允许其它服务器读取我的应用日志log-slave-updates=1)
+ 
+================================================华丽的分隔线=========================================
+
+2主多从+级联
+
+	2主就是把前面的双主架构做一遍，多从就是在新服务器上把从服务做一遍，如果要加级联就是再把级联架构做一遍。
+	
+================================================华丽的分隔线=========================================
+
+
+

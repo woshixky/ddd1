@@ -1,0 +1,417 @@
+=======================
+Mysql 5.6版本复制技术
+=======================
+
+Mysql5.6版本(包括rpm和源码包)复制技术，原理和Mysql5.1版本一样，但有几个地方需要注意
+	第1：my.cnf文件必须要指明datadir，port，pid-file，socket，log-error，log-bin，server-id
+	第2：因源码包用的不是3306端口，所以远程连接登陆数据库时要使用-P参数指定端口：
+	   例：/usr/local/mysql56/bin/mysql -uroot -p123 -h192.168.169.165 -P3307
+	第3：在做主从时不需要做slave步骤
+	第4：如果你本机装有rpm包版的mysql，那么rpm包版的配置文件/etc/my.cnf内容必须注释掉或把该文件删除掉，要不然会引起mysql5.6源码包默认读取该文件配置。
+	
+今天的课程是把源码Mysql5.6版本的主从复制技术搭建好，因为后面还有一种技术是Mysql5.5版本之后才有的。
+
+
+===================================
+Mysql5.6编译安装--复习下前面的课程
+===================================
+
+第一步：安装编译时所需要的rpm包
+--mysql5.5之后的版本需要cmake(c语言编译器）来进行编译安装
+# yum install gcc gcc-c++ ncurses-devel perl cmake    
+
+
+第二步：安装源码Mysql5.6数据库
+
+备:Mysql-5.6.26.tar.gz源码包文件，使用浏览器访问http://192.168.3.121/服务器下载
+
+	a、解压Mysql5.6源码软件包
+	  # tar xvf mysql-5.6.26.tar.gz -C /usr/src
+
+	b、cd到解压目录并编译配置
+	  # cd /usr/src/mysql-5.6.26/
+	  # cmake . -DCMAKE_INSTALL_PREFIX=/usr/local/mysql56 -DDEFAULT_CHARSET=utf8 -DDEFAULT_COLLATION=utf8_general_ci -DWITH_EXTRA_CHARSETS=gbk,gb2312 -DENABLED_LOCAL_INFILE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 
+
+	c、安装源码包
+	  # make && make install
+
+第三步：创建相关目录，并修改权限
+创建数据目录、pid存放目录、错误日志存放目录，并更改所属用户和组为mysql
+	# rm -rf /data/mysql56
+	# mkdir -p /data/mysql56 /var/run/mysqld /var/log/mysqld 
+	# chown mysql.mysql /data/mysql56 /var/run/mysqld /var/log/mysqld /usr/local/mysql56/   -R
+
+
+第四步：初始化数据库
+# cd /usr/local/mysql56 
+# /usr/local/mysql56/scripts/mysql_install_db --datadir=/data/mysql56/ --user=mysql
+
+
+第五步：配置编写my.cnf配置文件
+安装目录下新建etc目录并vim my.cnf文件：
+# mkdir /usr/local/mysql56/etc
+# vim /usr/local/mysql56/etc/my.cnf  --以下是文件内容
+
+[mysqld]                                      #数据库-服务端全局配置
+port=3307                                     #数据库端口
+datadir=/data/mysql56                         #数据目录	
+pid-file=/var/run/mysqld/mysql56.pid          #pid存放位置
+socket=/data/mysql56/mysql56.socket           #socket存放位置
+log-error=/var/log/mysqld/mysql56-err.log     #错误日志存放位置
+user=mysql                                    #使用mysql用户启动数据库进程
+
+[client]                                      #客户端-连接配置
+socket=/data/mysql56/mysql56.socket           #登陆数据库时指定socket文件位置
+
+
+第六步：修改启动数据库文件，并启动数据库
+	a、拷贝服务启动脚本模版 
+	  cp /usr/local/mysql56/support-files/mysql.server  /etc/init.d/mysql56	  
+
+	b、修改拷贝的启动脚本
+	  # vim /etc/init.d/mysql56
+	  47 datadir=/data/mysql56
+	  214 conf=/usr/local/mysql56/etc/my.cnf	--把配置文件路径/etc/my.conf改成你现在的路径/usr/local/mysql56/etc/my.cnf
+
+	c、启动Mysql数据库
+	  # /etc/init.d/mysql56 restart  --启动服务
+
+备：如果不想用/etc/init.d/mysql56启动服务，也可以用如下命令方式启动数据库
+	# /usr/local/mysql56/bin/mysqld_safe --defaults-file=/usr/local/mysql56/etc/my.cnf &
+
+注意：使用ps -ef|grep mysql 查看mysql进程是否存在，如果不存在则启动失败，存在启动成功。
+如果有多个mysql进程，则要看进程后面的port= 多少，如果端口是一样的，就要把数据库停掉，重新启动，如果不一样则表示是不同的数据库进程
+
+
+第七步：登陆数据库
+--登录命令
+# /usr/local/mysql56/bin/mysql 	
+
+--如果你常得上面的命令比较长，可以拷贝到/usr/bin里改名为mysql56，以后就使用mysql56这个命令来启动就方便很多了
+# cp /usr/local/mysql56/bin/mysql /usr/bin/mysql56	
+
+# mysql56  --登陆数据库
+
+
+
+
+
+
+===============================华丽的分隔线==================================
+
+
+
+
+
+
+==========================
+主从技术之Mysql5.6版本
+==========================
+
+搭建步骤：
+---------
+1、关闭iptables,selinux,NetworkManager
+2、将主机名和IP写进hosts
+
+两台服务器IP地址：
+master A     --主服务器ip：192.168.169.165
+slave B      --从服务器ip：192.168.169.166
+
+
+第一步；启动源码安装的mysql5.6数据库
+------------------------------------
+使用命令：ps -ef|grep mysql  是否有数据库启动
+我们源码包用的是3307端口，非3307端口的mysql都停止
+
+如果ps -ef|grep mysql 查看没有mysql进程，则启动:/etc/init.d/mysql56 restart
+
+
+第二步：修改主、从配置文件 /usr/local/mysql56/etc/my.conf
+---------------------------------------------------------
+
+在主服务器上master(192.168.169.165)上操作
+在[mysqld]标签下加入下面二句
+［mysqld] 
+log-bin=mysql56-master
+server-id=1
+
+
+在从服务器上slave(192.168.169.166)上操作
+在[mysqld]标签下加入下面一句
+ [mysqld]
+ server-id=2
+
+配置完后，两台mysql都要重新启动mysqld服务 /etc/init.d/mysql56 restart
+
+
+
+
+第三步：在主服务器上查看下是否已经有二进制日志mysql56-master.000001
+--------------------------------------------------------------------
+[root@web1 mysql56]# ll /data/mysql56/
+total 110668
+drwx------ 2 mysql mysql     4096 Sep  1 07:57 abc
+-rw-rw---- 1 mysql mysql       56 Aug 29 15:38 auto.cnf
+drwx------ 2 mysql mysql    45056 Aug 29 16:33 discuz
+-rw-rw---- 1 mysql mysql 12582912 Sep  1 07:42 ibdata1
+-rw-rw---- 1 mysql mysql 50331648 Sep  1 07:42 ib_logfile0
+-rw-rw---- 1 mysql mysql 50331648 Aug 29 15:37 ib_logfile1
+drwx------ 2 mysql mysql     4096 Aug 29 15:37 mysql
+-rw-rw---- 1 mysql mysql      493 Sep  1 07:57 mysql56-master.000001
+-rw-rw---- 1 mysql mysql       17 Sep  1 07:42 mysql56-master.index
+srwxrwxrwx 1 mysql mysql        0 Sep  1 07:42 mysql56.socket
+drwx------ 2 mysql mysql     4096 Aug 29 15:37 performance_schema
+drwx------ 2 mysql mysql     4096 Aug 29 16:19 test
+
+
+
+第四步：在主服务器上建立给从服务器复制的帐号并授权
+--------------------------------------------------
+在主服务器上master(192.168.169.165)上操作：
+建立qy帐号，密码111，授权从服务器192.168.169.162 ip登陆（意为:允许192.168.169.166登陆该数据）
+mysql> grant super,replication slave on *.* to 'qy'@'192.168.169.166' identified by '111';
+mysql> flush privileges;
+
+
+授权时如果想授权任何一个IP都可以登陆，则把IP地址改为 % 号，如下：
+mysql> grant super,replication slave on *.* to 'qy'@'%' identified by '111';
+
+
+
+授权完成后，在从服务器上登陆测试(192.168.169.166)
+/usr/local/mysql56/bin/mysql -uqy -h192.168.169.165 -p111 -P3307
+备：-h后面接IP为登陆服务器的IP,-P(大写P)后面接端口
+
+
+
+
+第五步：在主服务器(192.168.169.165)上给mysql加上锁，防止有新的数据写入
+-----------------------------------------------------
+mysql> flush tables with read lock;	
+
+
+第六步：在主服务器上把当前正在写的日志文件名和位置查询出来
+----------------------------------------------------------
+--使用 show master status命令将日志文件名和位置查出来
+mysql> show master status;   
++----------------+----------+--------------+------------------+-------------------+
+| File           | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++----------------+----------+--------------+------------------+-------------------+
+| mysql56.000001 |      402 |              |                  |                   |
++----------------+----------+--------------+------------------+-------------------+
+
+备：尝试在主服务器上使用命令show slave status;查看是否有数据，因没有配置slave信息，所以条命令是看不到任何东西，是空的。
+
+
+
+==========================================
+接下来到从服务器(192.168.169.166)上操作：
+==========================================
+
+第七步：在从服务器slave端，配置mysql主从关系
+--------------------------------------------------
+
+在从服务器上登陆本机数据库
+# mysql -uroot -p123456
+
+mysq> show slave status\G   --查看是否有配置信息，如果有，则要停止slave再配置，停止命令:slave stop,如果无则无需停止。
+
+
+配置主从关系：备：该台服务器为从时，需要配置连接主服务器的信息，从服务器能不能在主服务器上面获取二进制日志，全靠下面的配置信息。
+mysql> change master to		    	        --配置从服务器连接主服务器
+    -> master_user='qy',		        --主服务器建立复制的帐号
+    -> master_password='111',		        --密码
+    -> master_host='192.168.169.165',	  --主服务器IP
+    -> master_port=3307,			  --端口，注：不能加引号
+    -> master_log_file='mysql-bin.000001',  --主上面查到的文件名
+    -> master_log_pos=402;			  --主上面查到的位置号
+
+配置连接主服务器信息后，在从服务器上启动slave线程。
+mysql> start slave;				--启动slave服务，让io和sql线程生效
+
+
+
+启动完成后，再查看slave线程连接主服务器的状态
+mysql> show slave status\G
+*************************** 1. row ***************************
+               Slave_IO_State: Waiting for master to send event
+                  Master_Host: 192.168.169.165
+                  Master_User: qy
+                  Master_Port: 3307
+                Connect_Retry: 60
+              Master_Log_File: mysql56.000001
+          Read_Master_Log_Pos: 493
+               Relay_Log_File: mysql56-relay-bin.000004
+                Relay_Log_Pos: 372
+        Relay_Master_Log_File: mysql56.000001
+             Slave_IO_Running: Yes
+            Slave_SQL_Running: Yes
+              Replicate_Do_DB: 
+          Replicate_Ignore_DB: 
+           Replicate_Do_Table: 
+       Replicate_Ignore_Table: 
+      Replicate_Wild_Do_Table: 
+  Replicate_Wild_Ignore_Table: 
+                   Last_Errno: 0
+                   Last_Error: 
+                 Skip_Counter: 0
+          Exec_Master_Log_Pos: 493
+              Relay_Log_Space: 547
+              Until_Condition: None
+               Until_Log_File: 
+                Until_Log_Pos: 0
+           Master_SSL_Allowed: No
+           Master_SSL_CA_File: 
+           Master_SSL_CA_Path: 
+              Master_SSL_Cert: 
+            Master_SSL_Cipher: 
+               Master_SSL_Key: 
+        Seconds_Behind_Master: 0
+Master_SSL_Verify_Server_Cert: No
+                Last_IO_Errno: 0
+                Last_IO_Error: 
+               Last_SQL_Errno: 0
+               Last_SQL_Error: 
+  Replicate_Ignore_Server_Ids: 
+             Master_Server_Id: 1
+                  Master_UUID: 83caeab7-6dbb-11e6-9e67-000c294d8ca6
+             Master_Info_File: /data/mysql56/master.info
+                    SQL_Delay: 0
+          SQL_Remaining_Delay: NULL
+      Slave_SQL_Running_State: Slave has read all relay log; waiting for the slave I/O thread to update it
+           Master_Retry_Count: 86400
+                  Master_Bind: 
+      Last_IO_Error_Timestamp: 
+     Last_SQL_Error_Timestamp: 
+               Master_SSL_Crl: 
+           Master_SSL_Crlpath: 
+           Retrieved_Gtid_Set: 
+            Executed_Gtid_Set: 
+                Auto_Position: 0
+1 row in set (0.00 sec)
+
+
+
+第八步：再来到主服务器(192.168.169.165)master端解锁mysql：
+---------------------------------------------------------
+--前面第五步为了防止有新的数据写入，做了锁表动作，主从配置完成后，就要解锁该动作。
+mysql> unlock tables;   --解除表锁
+
+
+
+第十步：在主服务器(192.168.169.165)master端上测试
+-------------------------------------------------
+在主服务器上创建库、表和插入表数据后，在从服务器查看是否有相同数据
+mysql> create database abc;
+Query OK, 1 row affected (0.01 sec)
+
+mysql> show databases;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| abc                |
+| discuz             |
+| mysql              |
+| performance_schema |
+| test               |
++--------------------+
+6 rows in set (0.00 sec)
+
+
+
+在从服务器上查看是否也有相同的abc数据库
+mysql> show databases;
++--------------------+
+| Database           |
++--------------------+
+| information_schema |
+| abc                |
+| mysql              |
+| performance_schema |
+| test               |
++--------------------+
+5 rows in set (0.00 sec)
+
+
+至此:Mysql5.6源码包版数据库的主从复制完成了
+-------------------------------------------
+
+双主架构，
+1主多从架构，
+级联架构，
+
+方法和昨天讲的rpm包版一样(笔记:Mysql-day5.txt)一样
+
+
+
+=======================================
+以上完成后：接下来学习精细化复制技术
+=======================================
+
+
+
+
+=======================
+Mysql 基于表复制技术
+=======================
+
+
+复制库、表和表内容参数：可使用show slave status\G 命令看到以下参数
+
+            Replicate_Do_DB: 	--接受哪个库的复制：必须在指定的库下操作才能复制。包括表结构和表数据。
+        Replicate_Ignore_DB: 	--忽略哪个库的复制
+         Replicate_Do_Table: 	--接受哪个表的复制：注：只能指定某个库下的某个表的内容更新与修改，例：aaa.a3
+     Replicate_Ignore_Table: 	--忽略哪个表的复制
+    Replicate_Wild_Do_Table: 	--通配符表示复制哪些表：注：接收某个库下的所有表内容的修改，例:aaa.%
+Replicate_Wild_Ignore_Table: 	--通配符表示忽略哪些表
+
+
+
+实例说明：
+		master A	    slave B
+
+
+1、先把两台做成ab复制的架构
+	此时在master上做任何创建库、表或插入数据等动作，从服务器都会复制过来。
+
+2、现在的业务需求是：
+   要求：把master的aaa库下的表复制到slave上，其它的库都不要
+
+3、为了满足需求我们在slave b的my.cnf配置文件的[mysqld]参数组里加上
+
+	replicate_do_db=aaa			--只接受aaa库的复制
+
+4、重启slave b，然后测试
+测试结果为
+  ->在master上创建aaa库:create database aaa;
+	->在master创建aaa.a1表:create table aaa.a1(id int(1));
+	->并插入数据insert into aaa.a1 values(1);
+	
+	->回到slave上查看有aaa库，也有a1表，但没有数据
+	
+	如果要同步aaa.a1表下的数据，master要进到aaa库下操作才可以
+	->在master上操作，use aaa;然后再插入数据：insert into aaa.a1 values(2);
+	->回到slave上查看aaa库的a1表数据，这时就有了
+	如果想要复制该库下所有的表数据，这时就要加入另外一个参数
+
+5、解决方法：
+	在slave b上的my.cnf文件的[mysqld]标签下加上以下参数，就可以复制aaa库下的所有表和表内容了
+
+	replicate_wild_do_table=aaa.%					--%是通配符
+
+
+6、重启slave b 然后测试
+测试步骤：
+	->在master创建aaa.a2表:create table aaa.a2(id int(1));
+	->并插入数据insert into aaa.a2 values(1);
+	->并给aaa.a1表也插入数据：insert into aaa.a1 values(2);
+
+	->回到slave上查看aaa库下是否有a2表，a2和a1表是否有上面插入的数据。
+	
+表复制技术完成
+
+========================================华丽的分隔线=========================================
+
+
+

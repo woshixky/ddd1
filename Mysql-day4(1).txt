@@ -1,0 +1,377 @@
+--
+lamp
+linux + apache + mysql + php/perl/python		.php
+
+lnmp
+linux + nginx + mysql + php/python/perl			.php
+
+.net
+windows server + IIS + sql server + .net			.asp
+
+j2ee
+linux + tomcat/jboss  + mysql + jsp(java)				.jsp
+
+
+网站分为两种：
+ 		静态网站 和 动态网站
+
+各个软件的官网
+www.redhat.com
+www.centos.com
+www.apache.org
+www.nginx.org
+www.mysql.com
+www.php.net
+
+
+
+rpm安装lamp，（rpm版的lamp自动已经都联好了，成了一个整体)
+# yum install httpd* php*  mysql* -y 
+
+
+lamp 编译
+
+编译顺序: mysql和apache谁先编都可以，php一定要后编，因为编译php时要调用mysql和apache的文件，做链接，使apache和mysql支持php
+mysql
+apache
+php
+
+
+--现在编译php时可以使用新的mysqlnd驱动，可以不先编译mysql。
+
+单机lamp，也就是mysql,apache,php在同一台服务器上
+
+
+第一大步
+编译mysql5.6.26版本安装到/usr/local/mysql56，并启动服务
+（我这里端口为3307,socket为/var/run/mysqld/mysql56.socket)
+
+先将之前的编译的mysql删除
+
+# rm /usr/local/mysql56 -rf
+# rm /usr/local/mysql56/ -rf 
+# rm /etc/init.d/mysql5 -rf
+# rm /etc/init.d/mysql56 -rf
+# rm -rf /usr/src/mysql-5.1.72/
+# rm -rf /usr/src/mysql-5.6.26/
+
+
+软件包路径：
+/share/soft/lamp/mysql_source/mysql-5.6.26.tar.gz
+
+# yum install cmake    --mysql5.5之后的版本需要cmake(c语言编译器）来进行编译安装
+
+
+# tar xvf /share/soft/lamp/mysql_source/mysql-5.6.26.tar.gz -C /usr/src
+# cd /usr/src/mysql-5.6.26/
+# cmake . -DCMAKE_INSTALL_PREFIX=/usr/local/mysql56 -DDEFAULT_CHARSET=utf8 -DDEFAULT_COLLATION=utf8_general_ci -DWITH_EXTRA_CHARSETS=gbk,gb2312 -DENABLED_LOCAL_INFILE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 
+
+
+# make && make install
+
+安装后
+
+第1步：手动编写my.cnf配置文件
+# mkdir /usr/local/mysql56/etc
+# vim /usr/local/mysql56/etc/my.cnf
+
+[mysqld]
+port=3307
+datadir=/data/mysql56
+pid-file=/var/run/mysqld/mysql56.pid
+socket=/data/mysql56/mysql56.socket
+log-error=/var/log/mysqld/mysql56-err.log
+user=mysql
+
+[client]
+socket=/data/mysql56/mysql56.socket
+
+
+第2步：创建相关目录，并修改权限
+# rm -rf /data/mysql56
+# mkdir /data/mysql56 /var/run/mysqld /var/log/mysqld 
+# chown mysql.mysql /data/mysql56 /var/run/mysqld /var/log/mysqld /usr/local/mysql56/   -R
+
+
+第3步：初始化数据库
+
+# cd /usr/local/mysql56
+# /usr/local/mysql56/scripts/mysql_install_db --datadir=/data/mysql56/ --user=mysql
+
+
+第4步：启动服务，看是否登录OK
+# /usr/local/mysql56/bin/mysqld_safe --defaults-file=/usr/local/mysql56/etc/my.cnf &	--启动方法
+
+# /usr/local/mysql56/bin/mysql 	--登录命令
+
+# cp /usr/local/mysql56/bin/mysql /usr/bin/mysql56	--如果你常得上面的命令比较长，可以拷贝到/usr/bin里改名为mysql56，以后就使用mysql56这个命令来启动就方便很多了
+
+--如果需要服务脚本的支持，则做下列操作
+cp /usr/local/mysql56/support-files/mysql.server  /etc/init.d/mysql56	  --拷贝服务启动脚本模版 
+
+
+# vim /etc/init.d/mysql56
+41 datadir=/data/mysql56
+214 conf=/usr/local/mysql56/etc/my.cnf	--把配置文件路径/etc/my.conf改成你现在的路径/usr/local/mysql56/etc/my.cnf
+
+
+# /etc/init.d/mysql56 start  --启动服务
+
+启动方法:
+不用脚本的方法:
+# /usr/local/mysql56/bin/mysqld_safe --defaults-file=/usr/local/mysql56/etc/my.cnf &
+
+使用脚本的方法:
+/etc/init.d/mysql56 restart
+
+=================================================================
+
+
+第二大步:
+
+编译apache
+
+# yum install pcre-devel -y
+
+# tar xf /share/soft/lamp/mysql_source/httpd-2.2.31.tar.bz2 -C /usr/src/
+# cd /usr/src/httpd-2.2.31/
+
+
+# ./configure --help --查看参数帮助
+# ./configure --enable-modules=all --enable-mods-shared=all --enable-so  --with-mpm=prefork 
+
+# make 
+# make install
+
+
+========================================================================
+
+第三大步:编译安装PHP
+
+先安装编译时要的必要包
+yum -y install libxml2* libjpeg* libpng*  freetype*
+
+解压php包
+# tar xf /share/soft/lamp/mysql_source/php-5.6.12.tar.bz2 -C /usr/src/
+
+# cd /usr/src/php-5.6.12/
+
+# ./configure --with-apxs2=/usr/local/apache2/bin/apxs --with-mysql=/usr/local/mysql56 --with-mysqli=/usr/local/mysql56/bin/mysql_config --enable-sigchild  --enable-libgcc  --enable-bcmath --enable-calendar  --enable-exif --enable-ftp --enable-gd-native-ttf --enable-gd-jis-conv  --enable-mbstring --enable-pcntl --enable-shmop --enable-soap --enable-sysvmsg --enable-sysvsem --enable-sysvshm --enable-zip --with-libxml-dir --with-gd --with-jpeg-dir --with-png-dir --with-freetype-dir --enable-opcache --with-libxml-dir --with-openssl
+
+
+# make && make install	编译安装
+
+============================================== ==========================
+第四大步：修改apache和php的配置
+
+
+三个软件安装完毕后，进行apache和php配置
+
+1，配置中文优先支持
+
+# vim /usr/local/apache2/conf/httpd.conf
+
+439 Include conf/extra/httpd-languages.conf			--打开此选项，扩展配置文件就生效了
+
+# vim /usr/local/apache2/conf/extra/httpd-languages.conf 
+
+19 DefaultLanguage zh-CN	--默认语言集改为中文
+
+78 LanguagePriority zh-CN en ca cs da de el eo es et fr he hr it ja ko ltz nl nn no pl pt pt-BR ru sv tr zh-TW	--语言集优先集，把zh-CN 写到前面
+
+
+
+2，配置网站家目录
+# vim /usr/local/apache2/conf/httpd.conf
+
+
+
+157 DocumentRoot "/web"		--修改网站家目录
+
+188 <Directory "/web">		--相应的目录容器那里也要修改
+
+ 建立apache家目录
+# rm -rf /web
+
+# mkdir /web
+
+
+
+3,配置apache对php支持 也就是配置apache和php的联系
+# vim /usr/local/apache2/conf/httpd.conf
+
+106 LoadModule php5_module        modules/libphp5.so	--找到这一句，在这句下面加上两句
+
+AddHandler php5-script   .php
+AddType text/html  .php	--这两句的意思是以.php结尾的文件都认为是php程序文件，注意两句话的.php前面都是有一个空格的
+
+
+4,默认主页加上index.php,并放在index.html前
+# vim /usr/local/apache2/conf/httpd.conf
+
+222 DirectoryIndex index.php index.html
+
+
+5,启动apache
+
+# /usr/local/apache2/bin/apachectl start	--用这条命令启动
+
+
+错误一：
+AH00526: Syntax error on line 78 of /usr/local/apache2/conf/extra/httpd-languages.conf:
+Invalid command 'LanguagePriority', perhaps misspelled or defined by a module not included in the server configuration
+
+解决:
+# vim /usr/local/apache2/conf/httpd.conf
+LoadModule negotiation_module modules/mod_negotiation.so	--把这一句注释打开
+
+
+错误二：
+(98)Address already in use: make_sock: could not bind to address [::]:80
+(98)Address already in use: make_sock: could not bind to address 0.0.0.0:80
+no listening sockets available, shutting down
+Unable to open logs
+
+解决:
+上面的报错表示80被占用，可以去先停掉rpm版（或者改端口）httpd再启动
+
+
+# lsof -i:80	--启动成功后，可以看到下面的进程
+httpd     31352   root    4u  IPv6 305839      0t0  TCP *:http (LISTEN)
+httpd     31353 daemon    4u  IPv6 305839      0t0  TCP *:http (LISTEN)
+httpd     31354 daemon    4u  IPv6 305839      0t0  TCP *:http (LISTEN)
+httpd     31355 daemon    4u  IPv6 305839      0t0  TCP *:http (LISTEN)
+httpd     31356 daemon    4u  IPv6 305839      0t0  TCP *:http (LISTEN)
+httpd     31357 daemon    4u  IPv6 305839      0t0  TCP *:http (LISTEN)
+
+
+
+6，去网站家目录下写一个php的测试页
+# vim /web/index.php
+
+<?php
+        phpinfo();
+?>
+
+然后使用浏览器访问测试页，看是否支持php
+
+http://IP/
+
+
+
+7，拷贝php模版配置文件,并修改其相关配置
+# cp /usr/src/php-5.6.12/php.ini-production /usr/local/lib/php.ini
+
+--下面配置的是php和mysql的联系，让php能够找到mysql
+
+
+
+# vim /usr/local/lib/php.ini
+--查找到下面的四个参数，修改成对应的
+
+
+[MySQL]
+1150 mysql.default_port = 3307	--改成对应的mysql的端口
+1155 mysql.default_socket = /var/run/mysqld/mysql56.socket	--对应的socket文件地址
+
+[MySQLi]
+1209 mysqli.default_port = 3307
+1214 mysqli.default_socket = /var/run/mysqld/mysql56.socket
+
+
+
+重启下apache，再访问index.php，看是否仍然支持,可以图形看到mysql和mysqli里的端口和socket都变成了修改的项了
+
+(--注意php.ini修改后，需要重启apache使之生效)
+
+
+# vim /usr/local/lib/php.ini	--再次打开php.ini配置，在最后加上下面一段，支持opcache(php新一代的缓存加速器）
+zend_extension=opcache.so
+[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=8
+opcache.max_accelerated_files=4000
+opcache.revalidate_freq=60
+opcache.fast_shutdown=1
+
+
+再次重启apache，再访问test.php页面，找到opcache的配置选项，则表示成功
+
+
+
+====================================================================================
+
+
+mysql图形工具  
+
+phpmyadmin	--除了官方提供的图形管理工具之外网站用得比较多的管理mysql的图形工具
+
+
+
+1，解压到web家目录下
+
+# unzip /share/soft/lamp/php_source/phpMyAdmin-4.0.7-all-languages.zip -d /web/
+
+
+2，
+# cd /web 
+# mv phpMyAdmin-4.0.7-all-languages/ phpmyadmin
+# cd /web/phpmyadmin
+# cp config.sample.inc.php config.inc.php	 --拷贝配置文件，去掉sample关键字
+
+vim config.inc.php		--不用做任何修改，默认就可以用了
+
+$cfg['blowfish_secret'] = 'a8b7c6d';						--密码短语，验证模式为cookies时，密码短语不能为空，随便填几个数字就行
+$cfg['Servers'][$i]['extension'] = 'mysqli';		--mysqli的扩展连接
+$cfg['Servers'][$i]['AllowNoPassword'] = false; --4.0.7版本可以把这里的false改成true，表示允许空密码登录mysql进行管理，就可以不用做下面这一步了
+
+
+3。
+# /usr/local/mysql56/bin/mysqladmin -u root password '123'		--数据库加密码
+
+http://IP/phpmyadmin	--登录，使用root用户，密码就是刚改的123，空密码不能登录，所以要设置一个密码
+
+==============================================================================
+
+
+安装discuz论坛
+
+
+# unzip /share/soft/lamp/LAMP_source/Discuz_X3.2_SC_UTF8.zip -d /web/
+
+# cd /web
+# mkdir discuz
+# mv upload/* discuz/
+# mv readme/ discuz/
+# mv utility/ discuz/
+# rm upload/ -rf
+
+
+然后使用firefox用下面的路径来安装
+http://IP/discuz/install/
+
+
+环境检查这一步，有些目录和文件权限需要修改
+
+# chown daemon.daemon /web/discuz/ -R			--不可写，用户改成daemon
+
+
+数据库授权
+
+
+# /usr/local/mysql56/bin/mysql -p123
+
+
+mysql> create database discuz;	--创建一个库，用于存放将要安装的discuz论坛的表
+
+
+mysql> grant all on discuz.* to 'discuz'@'localhost' identified by '123';	--授权一个用户，用于discuz论坛程序连接mysql
+
+
+mysql> flush privileges;
+
+
+===========================================================================
+

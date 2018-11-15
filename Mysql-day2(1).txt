@@ -1,0 +1,244 @@
+
+源码版MySQL
+
+源码版 安装过程比较麻烦，要求技术水平高，但能自己去定制需要的功能，生产环境下有功能需求的话尽量使用这种版本
+
+编译参数简单介绍
+
+./configure --help  > /root/Desktop/mysqlconfigure.help
+
+		--prefix  安装软件的家目录
+		--enable-assembler 使用字符函数的汇编版本。
+		--enable-profiling 建立一个版本的剖析代码查询
+		--enable-local-infile 允许外部表格数据导入到数据库
+		--with-charset  字符集  mysql大概支持30多种字符集
+		--with-collation  字符的校验规则，mysql大概支持80多种
+		--with-extra-charsets 扩展字符集
+		--with-server-suffix 数据库头名，  -max mysql发布有新特性，还没有通过正式的测试，主要用来提升用户的认识
+		--with-pthread 线程库
+		--with-unix-socket-path	socket接口路径
+		--with-tcp-port	端口 
+		--with-mysqld-user	运行mysql的系统用户
+		--with-libwrap	支持tcp_trapper
+		--without-debug	关闭debug信息，mysql数据库会产生一些debug调试信息，对性能有一定的影响，如果不需要这种信息，可以用此参数关闭
+		--with-mysqld-ldflags  
+  	--with-client-ldflags 静态编译可以把性能提高5%到10%
+		--with-low-memory  支持低内存，避免内存限制
+		--with-mysqlmanager 多启动的管理器
+		--with-big-tables	支持大表
+
+	定义存储引擎的支持的相关参数：
+		--with-example-storage-engine
+		--with-archive-storage-engine
+		--with-csv-storage-engine
+		--with-blackhole-storage-engine
+		--with-ndbcluster 
+		--with-federated-storage-engine
+
+--在5.1之后，存储引擎做成插件式存储引擎，使用--with-plugins参数来指定编译进去的存储引擎
+
+
+编译前准备：
+安装开发工具和开发库这两个组
+yum源安装：
+中文系统安装：
+# yum groupinstall "开发工具" "开发库"
+
+英文系统安装：
+# yum groupinstall "Development tools" -y
+
+再安装编译用到的工具和依赖包：
+# yum install gcc gcc-c++ ncurses-devel perl  
+
+
+查看CPU信息，CPU大小和内存大小，会影响到编译的速度。
+cat /proc/cpuinfo 
+
+
+解决源码包mysql
+# tar xf mysql/mysql-5.1.72.tar.gz -C /usr/src
+# cd /usr/src/mysql-5.1.72/
+
+配置
+# ./configure --prefix=/usr/local/mysql --enable-assembler --enable-profiling --enable-local-infile --with-charset=gbk --with-extra-charsets=utf8,gb2312 --with-pthread  --with-mysqld-ldflags=-all-static --with-client-ldflags=-all-static --with-low-memory --with-big-tables --with-plugins=myisam,innobase,ndbcluster --with-mysqlmanager
+
+编译
+#make 
+
+编译安装
+#make install
+
+# ls /usr/local/mysql/	--编译完成后这个目录就有了
+bin    lib      mysql-test  sql-bench
+docs  include  libexec  share
+
+第一步：手动编写配置文件
+# mkdir /usr/local/mysql/etc	--建立一个存放配置文件的目录
+# vim /usr/local/mysql/etc/my.cnf	--编写my.cnf
+
+[mysqld]
+port=3307
+datadir=/data/mysql51
+socket=/data/mysql51/mysql51.socket
+pid-file=/var/run/mysqld/mysql51.pid
+
+log=/var/log/mysqld/mysql51.log
+log-error=/var/log/mysqld/mysqld51.log
+
+[client]
+socket=/data/mysql51/mysql5.socket
+
+第二步：建立配置文件里所写的相关目录，并修改相应的权限
+# mkdir /data/mysql51   /var/run/mysqld/  /var/log/mysqld
+# chown -R mysql.mysql /data/mysql51  /var/log/mysqld /var/run/mysqld/ /usr/local/mysql/ 
+
+
+第三步：配置服务脚本  
+# cp /usr/src/mysql-5.1.72/support-files/mysql.server  /etc/init.d/mysql51	--拷贝服务脚本模版到正确的位置
+
+# vim /etc/init.d/mysql51  --修改使之指向新编写的配置文件
+47  datadir=/data/mysql51
+218 conf=/usr/local/mysql/etc/my.cnf	--修改这句
+
+# chmod 755 /etc/init.d/mysql51  --给服务脚本加执行权限
+
+第四步：初始化数据库，第一次都需要初始化
+# /usr/local/mysql/bin/mysql_install_db --datadir=/data/mysql51/ --user=mysql
+
+如果本机有装rpm版的mysql则：/usr/local/mysql/bin/mysql_secure_installation 命令不执行，如果无则执行
+
+第五步：启动服务，并登录
+/etc/init.d/mysql5  start
+
+如果没有拷服务脚本，则用下面的命令来启动
+# /usr/local/mysql/bin/mysqld_safe --defaults-file=/usr/local/mysql/etc/my.cnf &
+
+# /usr/local/mysql/bin/mysql   --登陆验证
+
+
+报错解决：
+# ERROR 2002 (HY000): Can't connect to local MySQL server through socket '/tmp/mysql.sock' (111)
+--上面找不到socket文件，因为我编译时没有把下面这个参数指定，所以默认找/tmp/mysql.sock
+--with-unix-socket-path
+
+# /usr/local/mysql/bin/mysql --socket=/data/mysql51/mysql5.socket 	
+--现在登录需要指定socket文件的位置，要想不指定，可以按下面方法做
+
+登录时不指定socket的方法：
+在配置文件/usr/local/mysql/etc/my.cnf下加上如下一段
+[client]
+socket=/data/mysql51/mysql5.socket
+
+
+# /usr/local/mysql/bin/mysql   --再次登录就不需要指定socket文件了
+
+--为了登录方便（输入/usr/local/mysql/bin/mysql太长)，可以用下面的方法来做，然后使用mysql5这个命令来登录
+# cp /usr/local/mysql/bin/mysql /bin/mysql5
+
+关闭mysql的方法:
+--因为不太建议用服务脚本去start或者stop,所以关闭方法可以用他自带的管理命令mysqladmin去shutdown 
+/usr/local/mysql/bin/mysqladmin shutdown  -p  --有密码就加-p接密码，没密码就不用加-p
+
+-----------------------------------------------------
+
+关于mysql数据库启动问题的排错：
+熟悉上面五步，一般是权限问题，参数是否写错，空间是否满
+
+重新初始化数据库；如果还不能启动，查看一下进程，是否有进程卡死
+
+使用下面命令去查看配置文件写否有误；如果没有报错，则表示OK，并会把数据库的所有参数和对应的值给打印出来
+/usr/local/mysql/libexec/mysqld --verbo --help
+
+--如果希望看到它自带的man文档，做类似下面的操作，把它们拷到对应的路径下就可以使用man去查看了
+# cp /usr/local/mysql/share/man/man1/* /usr/share/man/man1/ 
+
+
+
+==========================================================
+
+											分隔线
+					
+==========================================================
+
+
+
+mysql-5.6.26的源码版的安装方法
+
+下载路径为：
+http://dev.mysql.com/get/Downloads/MySQL-5.6/mysql-5.6.26.tar.gz/from/http://mysql.mirror.rafal.ca/
+
+MySQL5.5版本之后，编译的选项同样众多，DBA可以通过# cmake . -LH 查看支持的参数，或者浏览下列页面：http://dev.mysql.com/doc/refman/5.6/en/source-configuration-options.html，查看编译时可指定参数的详细描述。
+
+一些常用参数如下：
+
+    * CMAKE_INSTALL_PREFIX：指定MySQL程序的安装目录，默认/usr/local/mysql
+    * DEFAULT_CHARSET：指定服务器默认字符集，默认latin1
+    * DEFAULT_COLLATION：指定服务器默认的校对规则，默认latin1_general_ci
+    * ENABLED_LOCAL_INFILE：指定是否允许本地执行LOAD DATA INFILE，默认OFF
+    * WITH_COMMENT：指定编译备注信息
+    * WITH_xxx_STORAGE_ENGINE：指定静态编译到mysql的存储引擎，MyISAM，MERGE，MEMBER以及CSV四种引擎默认即被编译至服务器，不需要特别指定。
+    * WITHOUT_xxx_STORAGE_ENGINE：指定不编译的存储引擎
+    * SYSCONFDIR：初始化参数文件目录
+    * MYSQL_DATADIR：数据文件目录
+    * MYSQL_TCP_PORT：服务端口号，默认3306
+    * MYSQL_UNIX_ADDR：socket文件路径，默认/tmp/mysql.sock 
+
+开始编译安装：
+# tar xf mysql-5.6.26.tar.gz -C /usr/src/
+# cd /usr/src/mysql-5.6.26/						--mysql5.5以后的编译方法不一样
+
+# yum install cmake -y   --mysql5.5之后的版本需要cmake(c语言编译器）来进行编译安装
+
+# cmake . -DCMAKE_INSTALL_PREFIX=/usr/local/mysql56 -DDEFAULT_CHARSET=utf8 -DDEFAULT_COLLATION=utf8_general_ci -DWITH_EXTRA_CHARSETS=gbk,gb2312 -DENABLED_LOCAL_INFILE=1 -DWITH_INNOBASE_STORAGE_ENGINE=1 
+
+# make && make install
+
+
+安装后
+
+第一步：手动编写my.cnf配置文件
+# mkdir /usr/local/mysql56/etc
+# vim /usr/local/mysql56/etc/my.cnf
+
+[mysqld]
+port=3308
+datadir=/data/mysql56
+
+pid-file=/var/run/mysqld/mysql56.pid
+socket=/data/mysql56/mysql56.socket
+
+log-error=/var/log/mysqld/mysql56-err.log
+user=mysql
+
+[client]
+socket=/data/mysql56/mysql56.socket
+
+
+第二步：创建相关目录，并修改权限
+# mkdir  /data/mysql56 /var/run/mysqld /var/log/mysqld 
+# chown -R mysql.mysql  /data/mysql56 /var/run/mysqld /var/log/mysqld /usr/local/mysql56/   
+
+
+第三步：初始化数据库
+# cd /usr/local/mysql56
+# /usr/local/mysql56/scripts/mysql_install_db --datadir=/data/mysql56/ --user=mysql
+
+
+第四步：启动服务，看是否登录OK
+# /usr/local/mysql56/bin/mysqld_safe --defaults-file=/usr/local/mysql56/etc/my.cnf &	--启动方法
+# /usr/local/mysql56/bin/mysql 	--登录命令
+# cp /usr/local/mysql56/bin/mysql /usr/bin/mysql56	--如果你常得上面的命令比较长，可以拷贝到/usr/bin里改名为mysql56，以后就使用mysql56这个命令来启动就方便很多了
+
+
+--如果需要服务脚本的支持，则做下列操作
+cp /usr/local/mysql56/support-files/mysql.server  /etc/init.d/mysql56	  --拷贝服务启动脚本模版 
+
+# vim /etc/init.d/mysql56
+214 conf=/usr/local/mysql56/etc/my.cnf	--把配置文件路径/etc/my.conf改成你现在的路径/usr/local/mysql/etc/my.cnf
+
+# /etc/init.d/mysql56 start  --启动服务
+
+
+/data/mysql
+/data/mysql51
+/data/mysql56

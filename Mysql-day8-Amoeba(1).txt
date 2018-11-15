@@ -1,0 +1,216 @@
+
+====================
+Mysql代理软件Amoeba
+====================
+
+Amoeba的作用是在于Mysql之上，用于代理应用与Mysql的连接，可以理解为中间件，他的作用是将连接细化，如：将读写进行分离，分别指向不同的数据库，也可用根据不同的数据进行指向不同的数据库，还可以做读或写的负载均衡
+
+
+mysql 代理层有mysqlproxy, amoeba, cobar等。
+
+	Mysqlproxy：数据量很小的时候用的还不错，可数据量一但大起来，这个软件就会暴露出很多BUG问题，Mysql官方给出的建议是适应轻量级的应用。
+	Amoeba：适用中大型数据量的应用负载，可做读写分离，数据切分，负载均衡等技术，是目前企业中用的最广的数据库代理。
+	Cobar：Cobar的分布式主要是通过将表放入不同的库来实现。是阿里吧吧开发的软件，本地的软件和Amoeba一样。
+
+
+
+Amoeba代理Mysql读写分离，架构图：
+
+			    客户	
+			    ｜
+			    ｜	
+		 web应用程序，游戏程序（c,php,java.......)客户端
+			    |
+			    |
+			 代理层	(mysqlproxy,amoeba) 读写分离/数据切分	
+			    |	
+			    |	
+		mysql主   <---->   mysql从
+
+
+准备4台服务器
+192.168.169.164   --客户端
+192.168.169.164   --amoeba
+192.168.169.164   --mysql主
+192.168.169.164   --mysql从
+
+
+架构前所有节点准备：
+1，主机名三步，互相绑定
+2，时间同步
+3，关闭iptables,selinux
+4, 配置好yum 
+5, 静态ip地址 
+
+
+第一步：安装amoeba服务器
+
+因为是java开发的，需要java运行环境，需要先安装JDK
+
+1、安装jdk1.8版本，tar包源码包，解压即能用。  
+
+解压jdk包
+tar xf jdk-8u45-linux-x64.tar.gz -C /usr/local/
+
+cd到解压目录
+cd /usr/local
+
+把刚解压的JDK改名为java
+mv ./jdk1.8.0_45  ./java
+
+完整的目录为：/usr/local/java
+
+验证一下刚解压安装的的jdk版本
+# /usr/local/java/bin/java -version   
+java version "1.8.0_45"
+Java(TM) SE Runtime Environment (build 1.8.0_45-b14)
+Java HotSpot(TM) 64-Bit Server VM (build 25.45-b02, mixed mode)
+
+到此为止JDK已经好了，下面amoeba要用到这个jdk目录
+
+
+
+2、安装amoeba软件
+
+a、新建一个amoeba目录，用于存放amoeba解压指定用
+# mkdir /usr/local/amoeba
+
+b、解压到上一步新建的目录里
+# tar xf /opt/amoeba/amoeba-mysql-binary-2.2.0.tar.gz -C /usr/local/amoeba
+
+c、使用ls查看解压的目录
+# ls  /usr/local/amoeba/	－－amoeba的所有文件在此目录下
+benchmark  changelogs.txt  lib          README.html
+bin        conf            LICENSE.txt
+
+关注下面二个目录
+bin 是启动脚本目录
+conf 是配置文件目录 
+	配置文件目录里我们要关注有三个文件:
+	amoeba.xml			--配置amoeba的全局配置文件
+	dbServers.xml 		--配置amoeba连接mysql数据库的文件
+	rule.xml			--配置我们数据切分的文件 
+
+
+d、开始配置amoeba连接mysql数据库
+
+# cd /usr/local/amoeba  --进到amoeba目录
+
+先修改./conf/amoeba.xml 文件
+vi /usr/local/amoeba/conf/amoeba.xml
+ 11 <property name="port">3307</property>    		 --修改端口
+ 30 <property name="user">test</property>		     --修改mysql登陆用户名
+ 32 <property name="password">123321</property>  	--登陆密码
+
+ 117 <!--					                               --删除该行，去掉注释
+ 118 <property name="writePool">server1</property> 	--这里指定写走server1
+ 119 <property name="readPool">server2</property>  	--把server1改成server2,指定读
+ 120 -->                                           	--删除该行，去掉注释
+
+ 
+再修改 ./conf/dbServers.xml
+vim /usr/local/amoeba/conf/dbServers.xml
+
+ 20 <property name="port">3307</property>			--修改端口
+ 23 <property name="schema">aaa</property>			--指定访问数据库
+ 26 <property name="user">test</property>			--登陆数据库的用户名
+ 29 <property name="password">123321</property> 	--登陆密码
+ 
+ 45 <dbServer name="server1"  parent="abstractServer">    --服务器1，mysql主服务器，45-50行是一段
+ 46         <factoryConfig>
+ 47                 <!-- mysql ip -->
+ 48                 <property name="ipAddress">192.168.169.165</property>   --mysql主服务器IP
+ 49         </factoryConfig>
+ 50 </dbServer>
+ 51 
+ 52 <dbServer name="server2"  parent="abstractServer">    --服务器2,mysql从服务器，52-57行是一段
+ 53         <factoryConfig>
+ 54                 <!-- mysql ip -->
+ 55                 <property name="ipAddress">192.168.169.166</property>   --mysql从服务器IP
+ 56         </factoryConfig>
+ 57 </dbServer>
+
+
+3、修改amoeba启动文件
+启动文件/usr/local/amoeba/bin/amoeba 是需要jdk的支持才能启动，下面我们配置启动文件指定访问jdk
+
+在第1步时我们解压了jdk，这里要配置amoeba访问jdk
+vi /usr/local/amoeba/bin/amoeba  ---在10行下面，加上以下代码
+ 11 JAVA_HOME=/usr/local/java
+ 12 PATH=$PATH:JAVA_HOME/bin
+ 13 export JAVA_HOME PATH
+
+ 62 DEFAULT_OPTS="-server -Xms256m -Xmx256m -Xss228k"  --在62行把 Xss128k 改成228k，因启动时要求最低内存是228k
+
+
+	注：-Xms256m  --分配置256m物理内存给amoeba软件用，连接数据库时初始化内存就要256m
+			-Xmx256m	--这个是amoeba软件最大可用的物理内存，（32位的JDK最大只能是2G，64位的JDK无限制但不能大于本机的物理内存大小）
+			-Xss128k  --默认是128k，但amoeba软件要求是228k，这个启动amoeba软件就要228k的内存
+			
+
+
+再使用nohup方法启动amoeba服务
+nohup ./bin/amoeba start &  --这个启动方法把启动的信息写进nohup.out文件里，并在后台运行。建议用这种方法，方便我们排错。
+
+启动的另外二个方法：建议不使用
+	./bin/amoeba start &  --这个启动的方法是把启动的信息打印在终端窗口。
+	./bin/amoeba start >/dev/null &  --把启动的信息输出到/dev/null 空洞里面。
+
+
+
+
+第二大步:在mysql主从服务器上授权并验证
+
+为了方便验证，把两台mysql复制关闭，然后两台mysql都新建下面的测试表  
+
+下面的步骤，两台数据库都要操作执行。
+
+mysql> create database aaa;
+Query OK, 1 row affected (0.00 sec)
+
+mysql> use aaa;
+Database changed
+
+mysql> create table emp (id int,ename varchar(20));
+Query OK, 0 rows affected (0.01 sec)
+
+mysql> insert into emp values(1,"主服务器192.168.169.165");   --主服务器插入这一条
+mysql> insert into emp values(1,"从服务器192.168.169.166");   --从服务器插入这一条
+
+--并对mysql进行授权，授权的IP为amoeba的IP
+mysql> grant all on aaa.* to 'test'@'%' identified by '123321';
+Query OK, 0 rows affected (0.04 sec)
+
+mysql> flush privileges;
+Query OK, 0 rows affected (0.00 sec)
+
+
+授权后,可以去amoeba(192.168.169.163)这台去连接一下这两个mysql,需要能连才行，如果不能连则把上面再做一遍
+在amoeba服务器测试连接两台mysql
+mysql56 -utest -p123321 -h192.168.169.165 -P3307
+mysql56 -utest -p123321 -h192.168.169.166 -P3307
+
+
+
+第三大步：在客户端进行测试
+客户端使用mysql命令连接 amoeba服务器登陆测试
+mysql56 -utest -p123321 -h192.168.169.163 -P3307
+
+mysql> use aaa;
+Database changed
+mysql> 
+mysql> 
+mysql> insert into emp(id) values(3);   --这里往数据库插入了一条数据，插入的动作是指定到了mysql主
+Query OK, 1 row affected (0.01 sec)
+
+mysql> select * from emp;     --这里再查时，看不到刚插入的数据，是因为读我们指定到了mysql从
++------+
+| id   |
++------+
+|    1 |
++------+
+1 row in set (0.00 sec)
+
+mysql> 
+
+
